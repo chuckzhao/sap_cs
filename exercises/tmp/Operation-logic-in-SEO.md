@@ -20,12 +20,13 @@ A training reference on the mechanism by which operations from a **general maint
 10. [Procedures, Variant Tables, VC Functions, Enhancements](#10-procedures-variant-tables-vc-functions-enhancements)
 11. [Reference Operands: $SELF / $PARENT / $ROOT](#11-reference-operands-self--parent--root)
 12. [End-to-End Runtime Flow](#12-end-to-end-runtime-flow)
-13. [How to Inspect a Task List Configuration](#13-how-to-inspect-a-task-list-configuration)
-14. [Debugging](#14-debugging)
-15. [Common Pitfalls / Anti-Patterns](#15-common-pitfalls--anti-patterns)
-16. [Transaction & Object Quick Reference](#16-transaction--object-quick-reference)
-17. [Accuracy & Version Notes](#17-accuracy--version-notes)
-18. [References](#18-references)
+13. [Order Creation Paths: How a Task List Reaches the Order](#13-order-creation-paths-how-a-task-list-reaches-the-order)
+14. [How to Inspect a Task List Configuration](#14-how-to-inspect-a-task-list-configuration)
+15. [Debugging](#15-debugging)
+16. [Common Pitfalls / Anti-Patterns](#16-common-pitfalls--anti-patterns)
+17. [Transaction & Object Quick Reference](#17-transaction--object-quick-reference)
+18. [Accuracy & Version Notes](#18-accuracy--version-notes)
+19. [References](#19-references)
 
 ---
 
@@ -71,7 +72,7 @@ Does the task list have a configuration profile? (check CU43)
 ```
 
 > **First diagnostic step for any mismatch:** run `CU43` on the task list.
-> No profile returned = VC is not your cause. Pivot to Section 15.
+> No profile returned = VC is not your cause. Pivot to Section 16.
 
 ---
 
@@ -80,7 +81,7 @@ Does the task list have a configuration profile? (check CU43)
 If the task list is not configurable, every operation is copied. Two standard influences can still narrow it:
 
 - **Manual operation selection** — a popup where the planner ticks which operations to bring across. Enabled via the operation-selection setting in the order default values (inside the order: *Extras → Settings → Default values*) or the corresponding SPRO order-type defaults. All operations are offered; the user chooses.
-- **Automatic task-list transfer exits** — see Section 16. These mainly control *which task list* is auto-selected (decision A), not individual operations.
+- **Automatic task-list transfer exits** — see Section 17. These mainly control *which task list* is auto-selected (decision A), not individual operations.
 
 ---
 
@@ -178,7 +179,7 @@ Operations `0010`, `0020`, `0080` have **no dependency**.
 
 **Same task list, different equipment** (`CASTIRON` / `DIESEL`) → `0010, 0020, 0030, 0070, 0080`. One task list, tailored per object.
 
-**Failure case** (`PUMP-4713` not classified → both characteristics blank) → only `0010, 0020, 0080` copy. Every value-testing condition is false. **No error, no warning.** This is the most common real-world cause of an unexplained mismatch (see Section 15).
+**Failure case** (`PUMP-4713` not classified → both characteristics blank) → only `0010, 0020, 0080` copy. Every value-testing condition is false. **No error, no warning.** This is the most common real-world cause of an unexplained mismatch (see Section 16).
 
 ---
 
@@ -276,20 +277,63 @@ After step 7 the order is autonomous (Section 1).
 
 ---
 
-## 13. How to Inspect a Task List Configuration
+## 13. Order Creation Paths: How a Task List Reaches the Order
+
+Operations only ever reach an order through a **task list assigned to that order**. The order's *creation path* decides how that task list is chosen and how its characteristic values are valuated. Two facts catch people out: a notification's own content does **not** supply operations, and in the sales-driven path the configuration lives on the **sales order item**, not the equipment.
+
+### 13.1 Notification → auto-generated order
+
+- A notification's **tasks** (catalog codes, often determined from priority or a service profile) are a *separate object* from order **operations**. They do not map to operations in standard.
+- You **cannot assign a task list directly to a notification.** Operations appear only because a task list reaches the *order*, via one of:
+  - **Maintenance plan** — task list on the maintenance item → call generates notification + order → the item's task list is auto-assigned to the order.
+  - **Service product** — see 13.2.
+  - **Auto task-list transfer exit** — `IWO10021` (order created from notification) fills the selection table.
+  - **Notification–order integration** — IMG: *PM/CS → Maintenance and Service Orders → Functions and Settings for Order Types → Define Notification and Order Integration*.
+- Behavior varies by task list type: a **general** task list populates all operations; an **equipment/functional-location** task list has been reported to bring only the first operation. Verify in your system.
+
+### 13.2 Sales order service item → service order (CS)
+
+The configurable-service-product path. The wiring:
+
+```
+Material master (service product, type DIEN)
+   ├── Strategy group  → triggers automatic service order creation on sales order save
+   └── OISD            → assigns the (configurable general) task list   [key: plant + service product]
+        │
+Sales order item (VA01) ── carries the CONFIGURATION (characteristic valuation)
+        │                    (alternatively evaluated from the technical object)
+        ▼
+Service order ── operations selected from the task list via object dependencies
+```
+
+**See the assigned task list:**
+- `OISD` — keyed by **plant + service product**; shows the task list group/counter (and work center) that feeds the order. This is where the service-product → task list link is defined.
+- On the order: `IW33` → Operations → the operation default data shows the source task list group/counter.
+
+**See the configuration (the values that filtered the operations):**
+- `VA03` → select the service item → **Configuration** — the characteristic valuation done on the sales order line. **This is the "popup" for this path**; these values drive the object-dependency selection.
+- If instead evaluated from the technical object, the equipment-side sources (Section 8) apply.
+
+**See the task list's own config model:** `CU43` on the OISD-assigned task list (profile → class) and `IA03` (operations → object dependencies), exactly as in Sections 5–11.
+
+> **No interactive popup on auto-creation.** Because the service order is generated automatically on sales-order save, there is no valuation prompt — values come from the sales item configuration (or technical object). Blank or unmatched values there → conditional operations drop silently, the same failure mode as the plan-generated case.
+
+---
+
+## 14. How to Inspect a Task List Configuration
 
 There is **no single "show the whole task list configuration" transaction** equivalent to `CU50`/`PMEVC` for materials — those are material/KMAT-centric. Assemble the picture, then verify by running it.
 
 1. **`CU43` — the hub.** Enter the task list → profile overview → *Goto → Class allocations* for the class → profile dependency assignments (procedures).
 2. **`IA03` / `IA06` — the operations.** Per operation: *Extras → Object Dependencies → Assignments* → the selection conditions.
 3. **Drill-downs:** `CL03` (class), `CT04` (characteristics), `CU03` (dependency code), `CU60`/`CU63` (variant tables), `CU67`/`SE37` (VC function + FM).
-4. **Functional check (the real test):** import the list into a throwaway order via *Extras → Task List Selection → General Task List*, valuate, and watch which operations land. Optionally trace at runtime (Section 14).
+4. **Functional check (the real test):** import the list into a throwaway order via *Extras → Task List Selection → General Task List*, valuate, and watch which operations land. Optionally trace at runtime (Section 15).
 
 > If a configurable **material** sits on the equipment, *that material* has a full model viewable in `CU50`/`PMEVC`/`CUMODEL`. But the operation-selection logic is **not** there — it is always on the task list (`CU43` + `IA06`).
 
 ---
 
-## 14. Debugging
+## 15. Debugging
 
 - **Runtime trace:** set a breakpoint in function module **`CULL_CONFIGURE_ITEM`**, then trigger task-list selection in the order. The call stack reveals exactly where each value is set and how each operation is selected — works regardless of how the value source is wired.
 - **Read classification cleanly in code:** `CLAF_CLASSIFICATION_OF_OBJECTS` (handles the `OBJEK`/`INOB` indirection and multi-value counters).
@@ -297,7 +341,7 @@ There is **no single "show the whole task list configuration" transaction** equi
 
 ---
 
-## 15. Common Pitfalls / Anti-Patterns
+## 16. Common Pitfalls / Anti-Patterns
 
 > These are the realistic causes behind an "unexplained" mismatch.
 
@@ -309,10 +353,12 @@ There is **no single "show the whole task list configuration" transaction** equi
 - **❌ Editing the task list after the order exists and expecting the order to update.** No resync — the order keeps its snapshot.
 - **❌ Building new logic on `Action` dependencies.** Obsolete; use procedures.
 - **❌ Looking for the operation-selection reason in the material's `PMEVC` model.** It lives on the task list, never on the material.
+- **❌ Looking on the equipment for the filtering values in the sales-driven path.** When the service order comes from a sales order service item, the characteristic valuation is on the **sales order item** (`VA03` → Configuration), not the equipment. Check there first (Section 13.2).
+- **❌ Assuming the notification populated the operations.** Notification tasks are catalog codes, not operations. Operations come from a task list assigned to the order (Section 13.1).
 
 ---
 
-## 16. Transaction & Object Quick Reference
+## 17. Transaction & Object Quick Reference
 
 ### Configuration profile & dependencies
 | TCode | Use |
@@ -347,6 +393,9 @@ There is **no single "show the whole task list configuration" transaction** equi
 | `IE01`/`IE02`/`IE03` | Equipment — create / change / **display (Classification, Configuration)** |
 | `IW31`/`IW32`/`IW33` | Order — create / change / display |
 | `IP10` | Maintenance plan scheduling (generates orders, **no popup**) |
+| `OISD` | Service product → task list assignment (key: **plant + service product**) |
+| `VA01`/`VA02`/`VA03` | Sales order — create / change / **display (service item → Configuration)** |
+| `MM03` | Material master display — service product **strategy group** (triggers auto service order) |
 
 ### Tables
 | Table | Holds |
@@ -386,7 +435,7 @@ There is **no single "show the whole task list configuration" transaction** equi
 
 ---
 
-## 17. Accuracy & Version Notes
+## 18. Accuracy & Version Notes
 
 - Transaction codes, table names, exits, and class types above were used/confirmed in standard S/4HANA on-premise contexts. **Always verify against your own system** — profiles, exits, and operation-selection settings are configuration- and version-dependent.
 - The "without equipment configuration" pattern is described by the SAP community as *loosely based on* **OSS Note 111394**. Treat the note as a starting reference and read it directly before relying on its exact content.
@@ -395,7 +444,7 @@ There is **no single "show the whole task list configuration" transaction** equi
 
 ---
 
-## 18. References
+## 19. References
 
 - SAP Help — *Configurable General Maintenance Task Lists* (S/4HANA on-premise product documentation).
 - SAP Community blog — *PM/CS: Configurable Task List – Standard Process*.
@@ -403,6 +452,8 @@ There is **no single "show the whole task list configuration" transaction** equi
 - SAP Community blog — *PM/CS: Configurable Task List – Object Dependencies*.
 - SAP Community blog — *Configurable Tasklist* (motor-types walkthrough).
 - SAPinsider — *Plan Service or Maintenance Order Operations Using Configurable Task Lists*.
+- SAP Help — *Service Processing Using Sales Order with Service Item* / *Creating a Sales Order with Configurable Service Product* (service product, OISD, item configuration).
+- SAP Community — task list determination in service orders (OISD); service order from notification / maintenance plan.
 - OSS Note **111394** (referenced basis for the enhancement-driven approach).
 
 ---
